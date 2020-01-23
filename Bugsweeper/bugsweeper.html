@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+div {
+	--main-left-margin: 32px;
+	padding-left: var(--main-left-margin);
+}
+.gamebutton {
+	padding : 5px;
+	font-family: 'Arial';
+	font-size: 16px;
+	width: 32px;
+	height: 32px;
+	border-width: 3px;
+	text-align: center;
+	position: relative;
+	margin: 0px;
+	border-radius: 0px;
+	//
+	z-index : 1;
+}
+.gamebox {
+	font-family: 'Arial';
+	font-size: 16px;
+	width: 16px;
+	height: 16px;
+	z-index: -1;
+	border: 1px;
+	border-style: dotted;
+	padding: 7px;
+	text-align: center;
+	position: relative;
+	margin: 0px;
+}
+.gameboard {
+	--main-grid-size: 32px;
+	display: grid;
+	grid-gap: 0px;
+	//grid-template-columns: repeat(10, var(--main-grid-size));
+	//grid-template-rows: repeat(10, var(--main-grid-size));
+	padding-left: 0;
+	border: 2px;
+	border-color: #FFF;
+	margin-left: var(--main-left-margin);
+	margin-bottom: var(--main-left-margin);
+	z-index:-2;
+}
+</style>
+</head>
+<body onload="startGame(10, 10, 10)">
+<script type="text/javascript">
+
+var playtime;
+var gameover;
+var boardoffset = 96;
+var gameGrid; // 2d array of chars, representing internal game board
+var arrayMines; // array of 'absolute' positions for each mine
+var xsize;
+var ysize;
+var clickstate; // 0 is 'reveal', 1 is 'flag'
+var tilesleft;
+var nFlags;
+var totalmines;
+var gamewon;
+var minerevealed;
+var timer; // timer handle for set/reset
+
+class gameTile {
+	constructor(x, y, id) {
+		this.x = x;
+		this.y = y;
+		this.id = id;
+		this.revealed = false;
+		this.flagged = false;
+		this.text = makeBoxText(x, y, id);
+	}
+}
+
+function startGame(xdim, ydim, nMines) {
+	// init globals
+	xsize = xdim;
+	ysize = ydim;
+	tilesleft = xsize * ysize; // decrement each tile deletion
+	nFlags = 0; // decrement each flag (can be negative)
+	clickstate=0;
+	gameover=false;
+	playtime = 0;
+	totalmines = nMines;
+	gamewon = false;
+	minerevealed = false;
+	// end globals
+	document.getElementById("boardWidth").value = xsize;
+	document.getElementById("boardHeight").value = ysize;
+	document.getElementById("nMines").value = nMines;
+	//
+	document.getElementById("timer").innerHTML = "TIMER: 0 s"
+	setClickState(0); // set the clickstate to 0, change appropriate HTML text to indicate
+	layMines(nMines);
+	// construct gameGrid frame
+	gameGrid = new Array(ysize);
+	for (var i=0; i<ysize; i++) {
+		gameGrid[i] = new Array(xsize);
+	}
+	// create buttons, text underlay
+	createBoard();
+	updateGameStats();
+	timer = setInterval(updateTimer, 1000);
+}
+
+function layMines(nMines) {
+	arrayMines = new Array(nMines); //new array of size nMines w/ undefined elements
+	for (var i=0; i<nMines ; i++){
+		var id;
+		do {
+			// find an integer from 0 to (xsize*ysize -1)
+			id = Math.floor((Math.random()*(xsize*ysize)));
+		} while (idFoundIn(id, arrayMines)); // keep looking until unique integer is found
+		arrayMines[i] = id;
+	}
+	arrayMines.sort(function(a,b){return a-b});
+}
+
+function createBoard() {
+	var x;
+	var y;
+	var count = 0; // track 'absolute index' for each button
+	// gameGrid[y][x] = gameTile
+	board = document.getElementById("gameboard");
+	var colstr = "" ; 
+	for (i=0; i<xsize; i++) {
+		colstr += " 32px";
+	}
+	var rowstr = "" ; 
+	for (i=0; i<ysize; i++) {
+		rowstr += " 32px";
+	}
+	board.style.gridTemplateColumns = colstr;
+	board.style.gridTemplateRows = rowstr;
+	//grid-template-columns: repeat(10, var(--main-grid-size));
+	//grid-template-rows: repeat(10, var(--main-grid-size));
+	for (y=0; y<ysize ; y++){
+		for (x=0; x<xsize; x++){
+			var button = document.createElement("button");
+			button.className = "gamebutton";
+			button.id = count;
+			// NON-recommended way to add CSS properties
+			//button.setAttribute("style", "grid-column:" + (x+1) + "; grid-row:" + (y+1) + ";");
+			// recommended way to add CSS properties
+			button.style.gridColumn = (x+1);
+			button.style.gridRow = (y+1);
+			button.setAttribute("onclick", "clickTile(" + count.toString() + ");" );
+			button.innerText = " ";
+			// set gameGrid element
+			gameGrid[y][x] = new gameTile(x, y, count);
+			var boxtext = gameGrid[y][x].text;
+			//create underlying text box (TODO: boot this into its own function that is called when tile revealed)
+			var box = document.createElement("p");
+			box.className = "gamebox";
+			box.innerText = boxtext;
+			box.style.gridColumn = (x+1);
+			box.style.gridRow = (y+1);
+			box.id = "box" + count;
+			// insert box and button to gameboard
+			board.insertAdjacentElement("beforeend", button);
+			board.insertAdjacentElement("beforeend", box);
+			count++;
+		}
+	}
+}
+
+function makeBoxText(x, y, id) {
+	// determine what text a grid box should contain based on its x/y/id and arrayMines contents
+	// return the result as a char
+	// 		N-surrounding mines should result in "N"
+	// 		0 surrounding mines should result in " "
+	// 		Contains mine should result in "*"
+	// ALGORITHM: iterate through array of 'absolute' indexes representing the surrounding tiles
+	//		Increment a 'mines' counter each time an index matches one in 'arrayMines'
+	var surroundingTiles = getTilesAround(x, y, id);
+	count = 0;
+	var boxText;
+	if ( idFoundIn(id, arrayMines) ) {
+		boxText = "*";
+	} else {
+		for (var i=0; i<surroundingTiles.length; i++) {
+			if ( idFoundIn(surroundingTiles[i], arrayMines) ) {
+				count += 1;
+			}
+		}
+		switch(count) {
+			case 0:
+				boxText = " ";
+				break;
+			default:
+				boxText = count.toString();
+		}
+	}
+	return boxText;
+}
+
+function clickTile(htmlId) {
+	// handle what should happen when a tile w/ id=htmlId is clicked on
+	// state=0: REVEAL (delete) tile
+	// state=1: FLAG - toggle innerText between "F" and " "
+	// NOTE: function assumes that the tile exists (should be the case if clicking on it)
+	// WIN/LOSE: 
+	// 		Game is potentially won or lost after each click (run checkGameState() after each click)
+	// 		gameover flag is set if the tile clicked contains a mine in corresponding box
+	// 		GAME WON: when (tilesleft==nMines) && (!gameover)
+	if (!gameover) {
+		var tile = document.getElementById(htmlId);
+		if (tile != null) {
+			switch (clickstate) {
+				case 0:
+					if (tile.innerText!="F") { // do nothing if flagged tile
+						deleteTile(htmlId); //delete will handle win logic
+						minerevealed = (arrayMines.find(function (a) {return a==htmlId;}) != undefined);
+					}
+					break;
+				case 1:
+					flagTile(htmlId);
+					break;
+			}
+		}
+	}
+	checkGameState();
+	updateGameStats();
+}
+
+function flagTile(htmlId) {
+	// toggle button text of id=htmlId from " " to "F"
+	var tile = document.getElementById(htmlId);
+	if (tile.innerText=="F") {
+		tile.innerText = " ";
+		nFlags -= 1;
+	} else {
+		tile.innerText = "F";
+		nFlags += 1;
+	}
+}
+	
+function deleteTile(htmlId) {
+	// delete an HTML element (should only be used for tile tho), by its HTML id attribute
+	var id = parseInt(htmlId);
+	var x = (id%xsize);
+	var y = Math.floor(id/xsize);
+	if (!(gameGrid[y][x].revealed) )	{
+		// SPECIAL CASE 0 : If box.innerText == "", reveal all adjacent tiles as well
+		var tile = document.getElementById(htmlId);
+		if (gameGrid[y][x].text ==" ") {
+			var neighbors = getTilesAround (x, y, id); // array of integer ids
+			tile.parentNode.removeChild(tile); // delete this tile first, prevent infinite loops
+			tilesleft -= 1;
+			gameGrid[y][x].revealed = true;
+			// ignore neighbor tiles that are null now
+			for (var i=0; i<neighbors.length; i++) {
+				if (document.getElementById(neighbors[i].toString()) != null) {
+					clickTile(neighbors[i].toString());
+				}
+			}
+		} else {
+			tile.parentNode.removeChild(tile);
+			tilesleft -= 1;
+			gameGrid[y][x].revealed = true;
+		}
+	}
+}
+
+function getTilesAround(x, y, id) {
+	// return array of surrounding tiles based on current row and col numbers (starts at 0)
+	// elements of array will be those tiles' id's
+	var surroundingTiles = [];
+	for (var rely=-1; rely<2; rely++) {
+		var ypos = y+rely;
+		if ((ypos>-1) && (ypos<ysize)) {
+			for (var relx=-1; relx<2; relx++) {
+				var xpos = x+relx;
+				if ((xpos>-1) && (xpos<xsize)){
+					// relx offsets from the current id
+					// rely offsets from the current id by (rely*xsize)
+					surroundingTiles.push(id + relx + (rely*xsize));
+				}
+			}
+		}
+	}
+	return surroundingTiles;
+}
+
+function updateTimer() {
+	playtime += 1;
+	document.getElementById("timer").innerHTML = `TIMER: ${playtime} s`;
+}
+
+function idFoundIn (id, array) {
+	var found = false; // id is not in here, unless proven otherwise
+	for (var i=0; i<array.length ; i++) {
+		if (array[i] == id) { found = true; }
+	}
+	return found;
+}
+
+function cheatCodes(code) {
+	switch (code) {
+		case (0):
+			var strMines = "";
+			for (var i=0; i<arrayMines.length; i++) {
+				strMines += (arrayMines[i] + ", ");
+			}
+			document.getElementById("arrayMinesCheat").innerHTML = strMines;
+			break;
+		case (1):
+			for (i=0; i<(xsize*ysize); i++) {
+				if (arrayMines.find(function (a) {return a==i;}) == undefined) {
+					setClickState(0);
+				} else {
+					setClickState(1);
+				}
+				clickTile(i.toString());
+			}
+			break;
+	}
+}
+
+function updateGameStats () {
+	// update the Game Stats element with: Total Mines, Mines left, Tiles Left
+	document.getElementById("gamestats").innerText = `Flags/Bugs: ${nFlags}/${totalmines} Revealed/Remaining: ${xsize*ysize-tilesleft}/${xsize*ysize-totalmines}`;
+	if (gameover) {
+		var obj = document.getElementById("winlose")
+		obj.innerText = gamewon ? "WINNER" : "LOSER";
+		obj.style.color =  gamewon ? "green" : "red";
+	}
+}
+
+function checkGameState() {
+	// check to see if gameover, WIN or LOSE
+	if (!gameover) {
+		gameover = ((tilesleft==totalmines) && (!gameover)) || minerevealed;
+		if (gameover) {
+			gamewon = !minerevealed;
+			clearInterval(timer);
+		}
+	}
+}
+
+function resetBoard() {
+	var width  = document.getElementById("boardWidth").value;
+	var height = document.getElementById("boardHeight").value;
+	var nMines = document.getElementById("nMines").value;
+	width = width=="" ? 10 : width;
+	height = height=="" ? 10 : height;
+	nMines = nMines=="" ? 10 : nMines;
+	// Enforce sizing rules, mines rules
+	width = width<2 ? 2 : (width>30 ? 30 : width);
+	height = height<2 ? 2 : (height>30 ? 30 :height);
+	nMines = nMines<width*height ? nMines : width*height-1;
+	nMines = nMines>0 ? nMines : 1;
+	// reset game board
+	board = document.getElementById("gameboard");
+	var child = board.lastElementChild;
+	while (child) {
+		board.removeChild(child);
+		child = board.lastElementChild;
+	}
+	document.getElementById("winlose").innerText = "";
+	clearInterval(timer);
+	startGame(width, height, nMines);
+}
+
+function setClickState(num) {
+	clickstate = num;
+	var stateText = "Current Mouse Click Mode: ";
+	switch (num){
+		case 0:
+			stateText += "REVEAL";
+			break;
+		case 1:
+			stateText += "FLAG";
+			break;
+	}
+	document.getElementById("clickStateText").innerText = stateText;
+}
+
+</script>
+<br>
+<div id="gameheader">
+	<h1 id = "gametitle">BUGSWEEPER.JS</h1>
+	<h3>RULES</h3>
+	<p>GOAL: Find all the bugs without stepping on one! </p>
+	<p>CLICK: To reveal tile, or flag tile</p>
+	<p>FLAG/REVEAL: Use these buttons to toggle clicking-mode</p>
+	<p id="timer" style="font-Weight: bold;"></p>
+</div>
+<div id="gameswitches">
+	<p id="clickStateText"></p>
+	<button onclick="setClickState(0);">REVEAL</button><button onclick="setClickState(1);">FLAG</button>
+	<p id="winlose"></p>
+</div>
+<div id="gameboard" class="gameboard">
+</div>
+<div id = gamefooter>
+	<p id="gamestats"></p>
+</div>
+<div id = "resetform">
+	<h3>RESET BOARD</h3>
+	<form action="" method="get">
+		Change Width (2 - 30):<br>
+		<input type="text" id="boardWidth"><br>
+		Change Height (2 - 30):<br>
+		<input type="text" id="boardHeight"><br>
+		Set # of Bugs (1 - (Width*Height - 1)):<br>
+		<input type="text" id="nMines">
+		<input type="button" value="Submit" onclick="resetBoard();">
+	</form>
+</div>
+<h2>TODO</h2>
+<ol>
+	<li>When Player loses, reveal the whole board</li>
+	<li>Adjust generation code s.t. the mines aren't laid until user reveals first tile, & mine will not be laid on 1st tile</li>
+	<li> FURTHER adjust code s.t. any tile's text is not generated until it is revealed to prevent debug-mode cheating ;)</li>
+	<li>Change 'Reveal all blank tiles' algorithm s.t. it doesn't take forever (problem for large boards)</li>
+	<li>Clean up CSS for grid elements</li>
+	<li>Clean up JS using preferred techniques</li>
+	<li>Beautify Timer, Tile numbers, 'bug' icon</li>
+</ol>
+<!--
+<button onclick="cheatCodes(0);">CHEAT: tells you where mines are</button>
+<button onclick="cheatCodes(1);">CHEAT: reveals all tiles</button>
+<p id="arrayMinesCheat"></p>
+-->
+</body>
+</html>
